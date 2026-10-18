@@ -1,0 +1,278 @@
+---
+title: "QBS 103 Final Project - Submission 1"
+author: "Pinzhang Zhu"
+date: "2026-10-18"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+# Load packages for data cleaning and visualization
+library(tidyverse)
+
+# Set default options for R Markdown output
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+## Data Import
+
+```{r import-data}
+# Import the original datasets
+covar <- read.csv("GSE85307_covar-1.csv")
+
+gene_expr <- read.csv(
+  "GSE85307_geneExpression.csv",
+  row.names = 1,
+  check.names = FALSE
+)
+
+gene_names <- read.csv("GSE85307_geneNames.csv")
+```
+
+## Initial Data Inspection
+
+```{r inspect-data}
+# Check the dimensions of the three datasets
+dim(covar)
+dim(gene_expr)
+dim(gene_names)
+
+# Inspect variable names and sample identifiers
+names(covar)
+head(colnames(gene_expr))
+head(rownames(gene_expr))
+names(gene_names)
+```
+
+## Sample ID Validation
+
+```{r check-sample-ids}
+# Check whether all covariate sample IDs exist in the expression matrix
+all(covar$geoID %in% colnames(gene_expr))
+
+# Check whether all expression sample IDs exist in the covariate data
+all(colnames(gene_expr) %in% covar$geoID)
+
+# Check for duplicated sample IDs in both datasets
+anyDuplicated(covar$geoID)
+anyDuplicated(colnames(gene_expr))
+
+# Check whether the sample IDs are in the same order
+identical(covar$geoID, colnames(gene_expr))
+```
+
+## Sample Alignment
+
+```{r align-samples}
+# Identify the positions of covariate sample IDs in the expression matrix
+sample_order <- match(covar$geoID, colnames(gene_expr))
+
+# Reorder expression columns to match the covariate sample order
+gene_expr_aligned <- gene_expr[, sample_order, drop = FALSE]
+
+# Verify that the sample IDs are correctly aligned
+identical(covar$geoID, colnames(gene_expr_aligned))
+```
+
+## Covariate Inspection
+
+```{r inspect-covariates}
+# Inspect the original covariate data structure
+str(covar)
+
+# Check the data types of all covariates
+sapply(covar, class)
+
+# Check for missing values in the original data
+colSums(is.na(covar))
+```
+
+## Data Cleaning
+
+```{r clean-continuous}
+# Create a working copy and clean the continuous variables
+covar_clean <- covar %>%
+  mutate(
+    # Remove text prefixes and convert maternal age and BMI to numeric
+    mat_age_yrs = as.numeric(str_remove(mat_age_yrs, ".*: ")),
+    mat_BMI = as.numeric(str_remove(mat_BMI, ".*: "))
+  )
+```
+
+## Data Cleaning Validation
+
+```{r validate-cleaning}
+# Inspect the data structure after cleaning
+glimpse(covar_clean)
+
+# Check for missing values introduced during conversion
+sum(is.na(covar_clean$mat_age_yrs))
+sum(is.na(covar_clean$mat_BMI))
+
+# Review the distributions of the cleaned variables
+summary(covar_clean$mat_age_yrs)
+summary(covar_clean$mat_BMI)
+```
+## Categorical Variable Inspection
+
+```{r inspect-categorical}
+# Check the original categories of pregnancy outcome
+table(covar_clean$preg_preeclampsia, useNA = "ifany")
+
+# Check the number of observations below and above BMI 25
+table(covar_clean$mat_BMI >= 25, useNA = "ifany")
+```
+
+## Categorical Variable Cleaning
+
+```{r clean-categorical}
+# Clean pregnancy outcome and create BMI categories
+covar_clean <- covar_clean %>%
+  mutate(
+    # Remove the text prefix from pregnancy outcome
+    preg_preeclampsia = str_remove(preg_preeclampsia, ".*: "),
+
+    # Convert pregnancy outcome to a categorical variable
+    preg_preeclampsia = factor(
+      preg_preeclampsia,
+      levels = c("Normal", "Preeclampsia")
+    ),
+
+    # Categorize maternal BMI using the cutoff of 25 kg/m2
+    BMI_group = case_when(
+      mat_BMI < 25 ~ "BMI < 25",
+      mat_BMI >= 25 ~ "BMI >= 25",
+      TRUE ~ NA_character_
+    ),
+
+    # Set the order of BMI categories
+    BMI_group = factor(
+      BMI_group,
+      levels = c("BMI < 25", "BMI >= 25")
+    )
+  )
+# Check the number of observations in each combination
+count(covar_clean, preg_preeclampsia, BMI_group)
+
+# Check for missing values after categorization
+colSums(is.na(covar_clean[, c("preg_preeclampsia", "BMI_group")]))
+
+```
+
+## Gene Selection
+
+```{r inspect-gene}
+# Inspect the structure of the gene annotation dataset
+glimpse(gene_names)
+
+# Find the probe IDs associated with PTX3
+gene_names %>%
+  filter(GENE == "PTX3")
+
+# Check whether the corresponding probes exist in the expression matrix
+gene_names %>%
+  filter(GENE == "PTX3") %>%
+  mutate(in_expression_data = as.character(PROBEID) %in%
+           rownames(gene_expr_aligned))
+```
+
+## Analysis Dataset
+
+```{r extract-gene-expression}
+# Extract PTX3 expression values from the aligned expression matrix
+ptx3_expression <- as.numeric(
+  gene_expr_aligned["8083594", ]
+)
+
+# Add PTX3 expression to the cleaned covariate dataset
+analysis_data <- covar_clean %>%
+  mutate(PTX3_expression = ptx3_expression)
+
+# Check the dimensions of the analysis dataset
+dim(analysis_data)
+
+# Inspect the selected variables
+analysis_data %>%
+  select(geoID, mat_age_yrs, mat_BMI,
+         preg_preeclampsia, BMI_group, PTX3_expression) %>%
+  head()
+
+# Check for missing gene expression values
+sum(is.na(analysis_data$PTX3_expression))
+
+# Summarize PTX3 expression levels
+summary(analysis_data$PTX3_expression)
+```
+
+## Data Visualization
+
+### Figure 1. Distribution of PTX3 Gene Expression
+
+```{r histogram, fig.width=7, fig.height=5}
+# Plot the distribution of PTX3 gene expression
+ggplot(analysis_data, aes(x = PTX3_expression)) +
+  geom_histogram(
+    bins = 15,
+    fill = "blue",
+    color = "white",
+    linewidth = 0.4
+  ) +
+  labs(
+    title = "Distribution of PTX3 Gene Expression",
+    x = "PTX3 Expression Level",
+    y = "Number of Samples"
+  ) +
+  theme_classic(base_size = 12)
+```
+
+### Figure 2. Maternal Age and PTX3 Expression
+
+```{r scatterplot, fig.width=7, fig.height=5, fig.cap="Figure 2. Relationship between maternal age and PTX3 gene expression."}
+# Examine the relationship between maternal age and PTX3 expression
+ggplot(analysis_data, aes(x = mat_age_yrs, y = PTX3_expression)) +
+  geom_point(
+    color = "blue",
+    alpha = 0.7,
+    size = 2
+  ) +
+  geom_smooth(
+    method = "lm",
+    se = TRUE,
+    color = "brown",
+    linewidth = 0.8
+  ) +
+  labs(
+    x = "Maternal Age (years)",
+    y = "PTX3 Expression Level"
+  ) +
+  theme_classic(base_size = 12)
+```
+
+### Figure 3. PTX3 Expression by Pregnancy Outcome and BMI Group
+
+```{r boxplot, fig.width=7, fig.height=5, fig.cap="Figure 3. PTX3 gene expression by pregnancy outcome and maternal BMI group."}
+# Compare PTX3 expression across pregnancy outcomes and BMI groups
+ggplot(
+  analysis_data,
+  aes(x = preg_preeclampsia, y = PTX3_expression, fill = BMI_group)
+) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    width = 0.65,
+    alpha = 0.8,
+    outlier.shape = 16,
+    outlier.size = 1.5
+  ) +
+  scale_fill_manual(
+    values = c("BMI < 25" = "blue",
+               "BMI >= 25" = "brown")
+  ) +
+  labs(
+    x = "Pregnancy Outcome",
+    y = "PTX3 Expression Level",
+    fill = "Maternal BMI"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    legend.position = "top"
+  )
+```
