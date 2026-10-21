@@ -276,3 +276,6 @@ ggplot(
     legend.position = "top"
   )
 ```
+## AI Use Disclosure
+
+I used ChatGPT (OpenAI) as a supplementary resource to discuss the project approach, receive guidance on GitHub setup and submission procedures, and improve the clarity and wording of written explanations. I independently reviewed and verified the code, analyses, visualizations, and interpretations, and take full responsibility for the accuracy and integrity of the submitted work.
