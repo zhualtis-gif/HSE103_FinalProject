@@ -1,0 +1,344 @@
+---
+title: "QBS 103 Final Project - Submission 2"
+author: "Pinzhang Zhu"
+date: "2026-11-02"
+output: pdf_document
+---
+
+## Data Import
+
+```{r setup, include=FALSE}
+# Load packages and set R Markdown options
+library(tidyverse)
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+```{r import-data}
+# Import the three original datasets
+covar <- read.csv("GSE85307_covar-1.csv")
+
+gene_expr <- read.csv(
+  "GSE85307_geneExpression.csv",
+  row.names = 1,
+  check.names = FALSE
+)
+
+gene_names <- read.csv("GSE85307_geneNames.csv")
+```
+
+## Data Preparation
+
+### Sample Alignment
+
+```{r align-samples}
+# Verify sample IDs before aligning the datasets
+stopifnot(
+  !anyDuplicated(covar$geoID),
+  !anyDuplicated(colnames(gene_expr)),
+  setequal(covar$geoID, colnames(gene_expr))
+)
+
+# Align expression columns with covariate sample IDs
+sample_order <- match(covar$geoID, colnames(gene_expr))
+
+gene_expr_aligned <- gene_expr[
+  ,
+  sample_order,
+  drop = FALSE
+]
+
+# Confirm the sample order
+stopifnot(
+  identical(covar$geoID, colnames(gene_expr_aligned))
+)
+```
+
+### Covariate Cleaning
+
+```{r clean-covariates}
+# Clean continuous and categorical variables
+covar_clean <- covar %>%
+  mutate(
+    mat_age_yrs = as.numeric(
+      str_remove(mat_age_yrs, ".*: ")
+    ),
+
+    mat_BMI = as.numeric(
+      str_remove(mat_BMI, ".*: ")
+    ),
+
+    preg_preeclampsia = factor(
+      str_remove(preg_preeclampsia, ".*: "),
+      levels = c("Normal", "Preeclampsia")
+    ),
+
+    BMI_group = case_when(
+      mat_BMI < 25 ~ "BMI < 25",
+      mat_BMI >= 25 ~ "BMI >= 25",
+      TRUE ~ NA_character_
+    ),
+
+    BMI_group = factor(
+      BMI_group,
+      levels = c("BMI < 25", "BMI >= 25")
+    )
+  )
+
+# Check missing values in the analysis covariates
+colSums(is.na(covar_clean[
+  ,
+  c("mat_age_yrs", "mat_BMI",
+    "preg_preeclampsia", "BMI_group")
+]))
+
+# Summarize sample sizes across the four groups
+count(covar_clean, preg_preeclampsia, BMI_group)
+```
+
+## Gene Selection
+
+```{r select-genes}
+# Identify genes with probes present in the expression matrix
+available_genes <- gene_names %>%
+  filter(
+    as.character(PROBEID) %in% rownames(gene_expr_aligned)
+  ) %>%
+  distinct(PROBEID, GENE, .keep_all = TRUE)
+
+# Select three genes for comparison
+selected_genes <- c("PTX3", "ABCA9", "ACTG2")
+
+# Find their probe IDs from the annotation data
+selected_probes <- available_genes %>%
+  filter(GENE %in% selected_genes)
+
+# Verify that each selected gene has exactly one probe
+probe_counts <- selected_probes %>%
+  count(GENE, name = "n_probes")
+
+stopifnot(
+  setequal(probe_counts$GENE, selected_genes),
+  all(probe_counts$n_probes == 1)
+)
+
+# Display selected genes and their probe IDs
+selected_probes %>%
+  select(GENE, PROBEID)
+```
+
+## Preparing the Analysis Dataset
+
+```{r prepare-analysis-data}
+# Extract expression data using the matched probe IDs
+selected_expression <- gene_expr_aligned[
+  as.character(selected_probes$PROBEID),
+  ,
+  drop = FALSE
+]
+
+# Transpose expression data so each row represents a sample
+expression_df <- as.data.frame(
+  t(selected_expression)
+)
+
+# Match probe IDs to gene names
+gene_order <- match(
+  colnames(expression_df),
+  as.character(selected_probes$PROBEID)
+)
+
+colnames(expression_df) <- selected_probes$GENE[gene_order]
+
+# Move sample IDs into a column for merging
+expression_df <- expression_df %>%
+  rownames_to_column(var = "geoID")
+
+# Merge expression values with cleaned covariates
+analysis_data_2 <- covar_clean %>%
+  left_join(expression_df, by = "geoID")
+
+# Verify the merged analysis dataset
+stopifnot(
+  nrow(analysis_data_2) == nrow(covar_clean),
+  identical(analysis_data_2$geoID, covar_clean$geoID),
+  !anyDuplicated(analysis_data_2$geoID),
+  all(selected_genes %in% names(analysis_data_2)),
+  all(colSums(is.na(analysis_data_2[, selected_genes])) == 0)
+)
+
+# Summarize expression values for the selected genes
+analysis_data_2 %>%
+  select(all_of(selected_genes)) %>%
+  summary()
+```
+
+## Reusable Plotting Function
+
+```{r define-plot-function}
+# Define a reusable function for three types of gene expression plots
+plot_gene_expression <- function(
+    data,
+    genes,
+    continuous_var,
+    categorical_vars
+) {
+
+  # Validate the requested variables
+  if (length(genes) < 1) {
+    stop("Please provide at least one gene.")
+  }
+
+  if (length(categorical_vars) != 2) {
+    stop("Please provide exactly two categorical variables.")
+  }
+
+  required_vars <- c(genes, continuous_var, categorical_vars)
+
+  if (!all(required_vars %in% names(data))) {
+    stop("One or more requested variables are missing.")
+  }
+
+  # Create a list to store the plots
+  plots <- list()
+
+  for (gene in genes) {
+
+    # Plot 1: Gene expression distribution
+    hist_plot <- ggplot(
+      data,
+      aes(x = .data[[gene]])
+    ) +
+      geom_histogram(
+        bins = 15,
+        fill = "#5B8DB8",
+        color = "white"
+      ) +
+      labs(
+        title = paste("Distribution of", gene, "Expression"),
+        x = paste(gene, "Expression Level"),
+        y = "Number of Samples"
+      ) +
+      theme_classic(base_size = 12)
+
+    # Plot 2: Gene expression and continuous covariate
+    scatter_plot <- ggplot(
+      data,
+      aes(
+        x = .data[[continuous_var]],
+        y = .data[[gene]]
+      )
+    ) +
+      geom_point(
+        color = "#5B8DB8",
+        alpha = 0.7,
+        size = 2
+      ) +
+      geom_smooth(
+        method = "lm",
+        se = TRUE,
+        color = "#C46A5A",
+        linewidth = 0.8
+      ) +
+      labs(
+        title = paste(gene, "Expression vs. Maternal Age"),
+        x = continuous_var,
+        y = paste(gene, "Expression Level")
+      ) +
+      theme_classic(base_size = 12)
+
+    # Plot 3: Gene expression by two categorical covariates
+    box_plot <- ggplot(
+      data,
+      aes(
+        x = .data[[categorical_vars[1]]],
+        y = .data[[gene]],
+        fill = .data[[categorical_vars[2]]]
+      )
+    ) +
+      geom_boxplot(
+        position = position_dodge(width = 0.8),
+        width = 0.65,
+        alpha = 0.8,
+        outlier.shape = NA
+      ) +
+      geom_point(
+        position = position_jitterdodge(
+          jitter.width = 0.15,
+          dodge.width = 0.8,
+          seed = 123
+        ),
+        alpha = 0.45,
+        size = 1.2
+      ) +
+      labs(
+        title = paste(gene, "Expression by Pregnancy Outcome and BMI"),
+        x = categorical_vars[1],
+        y = paste(gene, "Expression Level"),
+        fill = categorical_vars[2]
+      ) +
+      theme_classic(base_size = 12) +
+      theme(
+        legend.position = "top"
+      )
+
+    # Store all three plots for the current gene
+    plots[[gene]] <- list(
+      histogram = hist_plot,
+      scatterplot = scatter_plot,
+      boxplot = box_plot
+    )
+  }
+
+  return(plots)
+}
+```
+
+## Generate Plots
+
+```{r generate-plots}
+# Generate all nine plots with one function call
+all_plots <- plot_gene_expression(
+  data = analysis_data_2,
+  genes = selected_genes,
+  continuous_var = "mat_age_yrs",
+  categorical_vars = c("preg_preeclampsia", "BMI_group")
+)
+```
+
+## Results
+
+### Figure Set 1: Gene Expression Distributions
+
+```{r display-histograms, fig.width=7, fig.height=5}
+# Display one histogram for each selected gene
+for (gene in selected_genes) {
+  print(all_plots[[gene]][["histogram"]])
+}
+```
+
+### Figure Set 2: Maternal Age and Gene Expression
+
+```{r display-scatterplots, fig.width=7, fig.height=5}
+# Display one scatterplot for each selected gene
+for (gene in selected_genes) {
+  print(all_plots[[gene]][["scatterplot"]])
+}
+```
+
+### Figure Set 3: Gene Expression by Pregnancy Outcome and BMI
+
+```{r display-boxplots, fig.width=7, fig.height=5}
+# Display boxplots with individual observations
+for (gene in selected_genes) {
+  print(all_plots[[gene]][["boxplot"]])
+}
+```
+
+## AI Use Disclosure
+
+I used ChatGPT (OpenAI) as a supplementary resource to discuss the project approach, troubleshoot R code, receive guidance on GitHub setup and submission procedures, and improve the clarity and wording of written explanations. I reviewed the code, analyses, visualizations, and interpretations and take responsibility for the submitted work.
