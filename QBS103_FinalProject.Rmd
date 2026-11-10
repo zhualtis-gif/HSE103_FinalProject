@@ -1,0 +1,482 @@
+---
+title: "QBS 103 Final Project"
+author: "Pinzhang Zhu"
+date: "2026-11-09"
+output: pdf_document
+header-includes:
+  - \usepackage{booktabs}
+---
+
+## Methods
+
+### Data Source and Preparation
+
+This project used gene expression and maternal characteristic data from the Vitamin D Antenatal Asthma Reduction Trial (VDAART), described by Mirzakhani et al. (2016). The dataset (GSE85307) included 157 maternal blood samples: 110 from normal pregnancies and 47 from pregnancies with preeclampsia.
+
+The gene expression data were matched to maternal characteristics using GEO sample IDs. Text prefixes were removed from the covariate values, and continuous variables were converted to numeric format. Maternal BMI was divided into two categories using a cutoff of 25 kg/m². All 157 samples were retained in the analysis.
+
+### Data Analysis and Visualization
+
+Maternal age, gestational age at delivery, and maternal vitamin D levels were summarized using means and standard deviations. Pregnancy outcome and BMI category were summarized using counts and percentages.
+
+Gene expression was visualized using histograms, scatterplots, and boxplots for three selected genes: *PTX3*, *ABCA9*, and *ACTG2*. Scatterplots included fitted linear trends, while boxplots displayed individual observations.
+
+A heatmap was created using ten genes, with expression values standardized within each gene. Hierarchical clustering was applied to genes and samples, and annotation bars indicated pregnancy outcome and maternal BMI category. An alluvial plot was also used to visualize the distribution of samples across the two categorical variables.
+
+The analysis was descriptive, and no formal hypothesis tests were performed.
+
+### Software
+
+All data cleaning, analysis, and visualization were conducted using R version 4.5.1. Data processing and visualization used tidyverse (version 2.0.0), ggplot2 (version 4.0.2), and ggpubr (version 1.0.0). Heatmaps were generated using pheatmap (version 1.0.13), and alluvial plots were created using ggalluvial (version 0.12.6). The report was generated from R Markdown using knitr (version 1.52).
+
+The R Markdown code and project files are available in the GitHub repository:https://github.com/zhualtis-gif/HSE103_FinalProject.
+
+
+
+
+```{r setup, include=FALSE}
+# Load packages and set R Markdown options
+library(tidyverse)
+library(ggpubr)
+library(pheatmap)
+library(ggalluvial)
+
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+```{r import-data}
+# Import the three original datasets
+covar <- read.csv("GSE85307_covar-1.csv")
+
+gene_expr <- read.csv(
+  "GSE85307_geneExpression.csv",
+  row.names = 1,
+  check.names = FALSE
+)
+
+gene_names <- read.csv("GSE85307_geneNames.csv")
+```
+
+
+```{r align-samples, include=FALSE}
+# Align gene expression data with the covariate samples
+sample_order <- match(covar$geoID, colnames(gene_expr))
+
+gene_expr_aligned <- gene_expr[, sample_order, drop = FALSE]
+
+# Confirm the sample order
+identical(covar$geoID, colnames(gene_expr_aligned))
+```
+
+```{r clean-covariates}
+# Clean continuous and categorical variables
+covar_clean <- covar %>%
+  mutate(
+    mat_age_yrs = as.numeric(
+      str_remove(mat_age_yrs, ".*: ")    ),
+    mat_BMI = as.numeric(
+      str_remove(mat_BMI, ".*: ")    ),
+    # Clean gestational age at delivery
+    delivery_gestAge_wks = as.numeric(
+      str_remove(delivery_gestAge_wks, ".*: ")    ),
+   # Clean maternal vitamin D level
+   mat_vitD = as.numeric(
+      str_remove(mat_vitD, ".*: ")    ),
+    preg_preeclampsia = factor(
+      str_remove(preg_preeclampsia, ".*: "),
+      levels = c("Normal", "Preeclampsia")    ),
+    BMI_group = case_when(
+      mat_BMI < 25 ~ "BMI < 25",
+      mat_BMI >= 25 ~ "BMI >= 25",
+      TRUE ~ NA_character_    ),
+    BMI_group = factor(
+      BMI_group,
+      levels = c("BMI < 25", "BMI >= 25") ) )
+
+```
+
+
+
+```{r select-genes}
+# Find genes with probes available in the expression data
+available_genes <- gene_names %>%
+  filter(as.character(PROBEID) %in% rownames(gene_expr_aligned)) %>%
+  distinct(PROBEID, GENE, .keep_all = TRUE)
+
+# Select three genes
+selected_genes <- c("PTX3", "ABCA9", "ACTG2")
+
+# Find the corresponding probe IDs
+selected_probes <- available_genes %>%
+  filter(GENE %in% selected_genes)
+
+```
+
+```{r select-heatmap-genes}
+# Select seven more genes for the heatmap
+extra_genes <- available_genes %>%
+  filter(!GENE %in% selected_genes) %>%
+  distinct(GENE) %>%
+  slice_head(n = 7) %>%
+  pull(GENE)
+
+# Combine the ten genes
+heatmap_genes <- c(selected_genes, extra_genes)
+
+# Get their probe IDs
+heatmap_probes <- available_genes %>%
+  filter(GENE %in% heatmap_genes) %>%
+  select(GENE, PROBEID)
+
+```
+
+
+```{r prepare-heatmap}
+# Extract expression values for the ten genes
+heatmap_matrix <- as.matrix(
+  gene_expr_aligned[
+    as.character(heatmap_probes$PROBEID),
+    ,
+    drop = FALSE
+  ]
+)
+
+# Replace probe IDs with gene names
+rownames(heatmap_matrix) <- heatmap_probes$GENE
+
+# Add two categorical variables for the tracking bars
+heatmap_annotation <- data.frame(
+  Pregnancy = covar_clean$preg_preeclampsia,
+  BMI = covar_clean$BMI_group,
+  row.names = covar_clean$geoID
+)
+```
+
+
+
+```{r prepare-analysis-data}
+# Extract expression data using the matched probe IDs
+selected_expression <- gene_expr_aligned[
+  as.character(selected_probes$PROBEID),
+  ,
+  drop = FALSE
+]
+
+# Transpose expression data so each row represents a sample
+expression_df <- as.data.frame(
+  t(selected_expression)
+)
+
+# Match probe IDs to gene names
+gene_order <- match(
+  colnames(expression_df),
+  as.character(selected_probes$PROBEID)
+)
+
+colnames(expression_df) <- selected_probes$GENE[gene_order]
+
+# Move sample IDs into a column for merging
+expression_df <- expression_df %>%
+  rownames_to_column(var = "geoID")
+
+# Merge expression values with cleaned covariates
+analysis_data_2 <- covar_clean %>%
+  left_join(expression_df, by = "geoID")
+
+
+```
+
+
+```{r define-plot-function}
+# Create three plots for each selected gene
+plot_gene_expression <- function(genes) {
+
+  plots <- list()
+
+  for (gene in genes) {
+
+    # Histogram
+    hist_plot <- ggplot(
+      analysis_data_2,
+      aes(x = .data[[gene]])
+    ) +
+      geom_histogram(
+        bins = 15,
+        fill = "#5B8DB8",
+        color = "white"
+      ) +
+      labs(
+        x = bquote(italic(.(gene)) ~ "expression level"),
+        y = "Number of samples"
+      ) +
+      theme_classic(base_size = 12)
+
+    # Scatterplot
+    scatter_plot <- ggplot(
+      analysis_data_2,
+      aes(
+        x = mat_age_yrs,
+        y = .data[[gene]]
+      )
+    ) +
+      geom_point(
+        color = "#5B8DB8",
+        alpha = 0.7,
+        size = 2
+      ) +
+      geom_smooth(
+        method = "lm",
+        se = TRUE,
+        color = "#C46A5A",
+        linewidth = 0.8
+      ) +
+      labs(
+        x = "Maternal age (years)",
+        y = bquote(italic(.(gene)) ~ "expression level")
+      ) +
+      theme_classic(base_size = 12)
+
+    # Boxplot with individual observations
+    box_plot <- ggplot(
+      analysis_data_2,
+      aes(
+        x = preg_preeclampsia,
+        y = .data[[gene]],
+        fill = BMI_group      )    ) +
+      geom_boxplot(
+        position = position_dodge(width = 0.8),
+        width = 0.65,
+        alpha = 0.8,
+        outlier.shape = NA      ) +
+      geom_point(
+        position = position_jitterdodge(
+          jitter.width = 0.15,
+          dodge.width = 0.8,
+          seed = 123        ),
+        alpha = 0.45,
+        size = 1.2      ) +
+      scale_fill_discrete(
+      labels = c("Below 25", "25 or higher")) +
+      labs(
+        x = "Pregnancy outcome",
+        y = bquote(italic(.(gene)) ~ "expression level"),
+        fill = "Maternal BMI"      ) +
+      theme_classic(base_size = 12) +
+      theme(legend.position = "top")
+
+    # Store the three plots
+    plots[[gene]] <- list(
+      histogram = hist_plot,
+      scatterplot = scatter_plot,
+      boxplot = box_plot    )  }
+
+  return(plots)}
+```
+
+
+
+```{r generate-plots}
+# Generate plots for the three selected genes
+all_plots <- plot_gene_expression(selected_genes)
+```
+
+## Results
+
+The dataset included 157 samples, with 110 normal pregnancies and 47 preeclampsia pregnancies. Maternal age was similar between the two groups. Compared with the normal pregnancy group, the preeclampsia group had a lower mean gestational age at delivery (37.8 vs. 39.3 weeks) and a lower mean maternal vitamin D level (19.7 vs. 24.4 ng/mL). The proportion of mothers with BMI >=25 was also higher in the preeclampsia group (72.3% vs. 63.6%) (Table 1).
+
+### Summary Statistics
+
+```{r table1-summary, include=FALSE}
+# Summarize continuous variables by pregnancy outcome
+continuous_summary <- analysis_data_2 %>%
+  group_by(preg_preeclampsia) %>%
+  summarise(
+    n = n(),
+    age_mean = mean(mat_age_yrs),
+    age_sd = sd(mat_age_yrs),
+    gest_age_mean = mean(delivery_gestAge_wks),
+    gest_age_sd = sd(delivery_gestAge_wks),
+    vitamin_d_mean = mean(mat_vitD),
+    vitamin_d_sd = sd(mat_vitD)
+  )
+
+continuous_summary
+
+# Summarize BMI categories within each pregnancy outcome
+bmi_summary <- analysis_data_2 %>%
+  count(preg_preeclampsia, BMI_group) %>%
+  group_by(preg_preeclampsia) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+bmi_summary
+```
+
+```{r display-table1, results='asis'}
+# Separate the two pregnancy outcome groups
+normal <- continuous_summary %>%
+  filter(preg_preeclampsia == "Normal")
+
+pre <- continuous_summary %>%
+  filter(preg_preeclampsia == "Preeclampsia")
+
+normal_bmi <- bmi_summary %>%
+  filter(preg_preeclampsia == "Normal")
+
+pre_bmi <- bmi_summary %>%
+  filter(preg_preeclampsia == "Preeclampsia")
+
+# Format continuous variables as mean (SD)
+table1 <- data.frame(
+  Characteristic = c(
+    "Maternal age (years)",
+    "Gestational age at delivery (weeks)",
+    "Maternal vitamin D (ng/mL)",
+    "Maternal BMI below 25",
+    "Maternal BMI 25 or higher"
+  ),
+
+  Normal = c(
+    sprintf("%.1f (%.1f)", normal$age_mean, normal$age_sd),
+    sprintf("%.1f (%.1f)", normal$gest_age_mean, normal$gest_age_sd),
+    sprintf("%.1f (%.1f)", normal$vitamin_d_mean, normal$vitamin_d_sd),
+    sprintf("%d (%.1f%%)", normal_bmi$n[1], normal_bmi$percent[1]),
+    sprintf("%d (%.1f%%)", normal_bmi$n[2], normal_bmi$percent[2])
+  ),
+
+  Preeclampsia = c(
+    sprintf("%.1f (%.1f)", pre$age_mean, pre$age_sd),
+    sprintf("%.1f (%.1f)", pre$gest_age_mean, pre$gest_age_sd),
+    sprintf("%.1f (%.1f)", pre$vitamin_d_mean, pre$vitamin_d_sd),
+    sprintf("%d (%.1f%%)", pre_bmi$n[1], pre_bmi$percent[1]),
+    sprintf("%d (%.1f%%)", pre_bmi$n[2], pre_bmi$percent[2])
+  )
+)
+
+# Add sample sizes to the column headings
+names(table1)[2:3] <- c(
+  paste0("Normal (n = ", normal$n, ")"),
+  paste0("Preeclampsia (n = ", pre$n, ")")
+)
+
+# Display the table in LaTeX format
+knitr::kable(
+  table1,
+  format = "latex",
+  booktabs = TRUE,
+  align = c("l", "c", "c"),
+  caption = paste(
+  "Maternal characteristics by pregnancy outcome.",
+  "Continuous variables are presented as mean (SD),",
+  "and categorical variables as counts and percentages."))
+```
+
+### Gene Expression Distributions
+The expression distributions differed across the three selected genes. *PTX3* showed a slightly right-skewed distribution, while *ABCA9* expression values were more concentrated. Most *ACTG2* expression values were within a narrow range, with a few notably high observations (Figure 1).
+
+```{r display-histograms, fig.width=11, fig.height=3.8, fig.cap="Gene expression distributions across 157 samples: (A) \\textit{PTX3}, (B) \\textit{ABCA9}, and (C) \\textit{ACTG2}. Each histogram shows the number of samples within each expression interval."}
+# Combine the three histograms
+ggarrange(
+  all_plots[["PTX3"]][["histogram"]],
+  all_plots[["ABCA9"]][["histogram"]],
+  all_plots[["ACTG2"]][["histogram"]],
+  labels = c("A", "B", "C"),
+  ncol = 3,
+  nrow = 1
+)
+```
+
+### Maternal Age and Gene Expression
+The scatterplots showed weak linear trends between maternal age and expression levels for all three genes. No clear linear relationship was visible for *PTX3*, *ABCA9*, or *ACTG2* (Figure 2).
+
+```{r display-scatterplots, fig.width=11, fig.height=3.8, fig.cap="Gene expression levels in relation to maternal age: (A) \\textit{PTX3}, (B) \\textit{ABCA9}, and (C) \\textit{ACTG2}. Each point represents one sample. The fitted lines show linear trends, with shaded areas indicating 95% confidence intervals."}
+# Combine the three scatterplots
+ggarrange(
+  all_plots[["PTX3"]][["scatterplot"]],
+  all_plots[["ABCA9"]][["scatterplot"]],
+  all_plots[["ACTG2"]][["scatterplot"]],
+  labels = c("A", "B", "C"),
+  ncol = 3,
+  nrow = 1
+)
+```
+
+### Gene Expression by Pregnancy Outcome and BMI
+Gene expression distributions overlapped across pregnancy outcome and BMI groups. Some differences in group medians were visible for *ABCA9*, while *PTX3* and *ACTG2* showed relatively similar expression levels across the groups (Figure 3).
+
+```{r display-boxplots, fig.width=9, fig.height=4.5, out.width="\\linewidth", fig.align="center", fig.cap="Gene expression by pregnancy outcome and maternal BMI category: (A) \\textit{PTX3}, (B) \\textit{ABCA9}, and (C) \\textit{ACTG2}. Boxes show the median and interquartile range, while jittered points represent individual samples."}
+
+# Combine the three boxplots
+ggarrange(
+  all_plots[["PTX3"]][["boxplot"]],
+  all_plots[["ABCA9"]][["boxplot"]],
+  all_plots[["ACTG2"]][["boxplot"]],
+  labels = c("A", "B", "C"),
+  ncol = 3,
+  nrow = 1,
+  common.legend = TRUE,
+  legend = "top"
+)
+```
+
+### Gene Expression Heatmap
+Figure 4 shows the expression patterns of ten selected genes across 157 samples. Hierarchical clustering was applied to both genes and samples, with pregnancy outcome and maternal BMI category displayed as annotation bars. Expression levels varied across samples, with a few notably high values. The clustering did not show a clear separation between normal and preeclampsia samples.
+
+```{r display-heatmap, fig.width=10, fig.height=6, fig.cap="Heatmap of ten selected genes across 157 samples. Expression values were standardized within each gene. Rows and columns were clustered hierarchically. The tracking bars indicate pregnancy outcome and maternal BMI category."}
+# Create a heatmap with clustering and two tracking bars
+  pheatmap(
+  heatmap_matrix,
+  scale = "row",
+  annotation_col = heatmap_annotation,
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  show_colnames = FALSE,
+  labels_row = parse(
+    text = paste0("italic(", rownames(heatmap_matrix), ")")
+  )
+)
+```
+
+
+### Maternal BMI and Pregnancy Outcome
+Figure 5 illustrates the distribution of maternal BMI categories across pregnancy outcomes. Among 157 samples, 53 mothers had a BMI below 25 and 104 had a BMI of 25 or higher. The flows show the number of normal and preeclampsia pregnancies within each BMI category.
+
+```{r display-alluvial, fig.width=8, fig.height=5, fig.cap="Distribution of maternal BMI categories across normal and preeclampsia pregnancies. The width of each flow represents the number of samples in that group."}
+
+# Count samples in each combination
+flow_data <- analysis_data_2 %>%
+  count(BMI_group, preg_preeclampsia)
+
+# Plot the distribution across the two categories
+ggplot(
+  flow_data,
+  aes(axis1 = BMI_group, axis2 = preg_preeclampsia, y = n)) +
+  ggalluvial::geom_alluvium(
+    aes(fill = BMI_group),
+    width = 0.32,
+    alpha = 0.8  ) +
+  ggalluvial::geom_stratum(
+    width = 0.32,
+    fill = "white",
+    color = "grey40"  ) +
+  geom_text(
+    stat = "stratum",
+    aes(label = after_stat(stratum)),
+    size = 3.5  ) +
+  scale_x_discrete(
+    limits = c("Maternal BMI", "Pregnancy outcome"),
+    expand = c(0.25, 0.35)  ) +
+  labs(y = "Number of samples", fill = "Maternal BMI") +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid = element_blank(),
+    axis.title.x = element_blank(),
+    legend.position = "none"  )
+```
+
+## AI Use Disclosure
+
+I used ChatGPT (OpenAI) as a supplementary resource to discuss the project approach, troubleshoot R code, receive guidance on GitHub setup and submission procedures, and improve the clarity and wording of written explanations. I reviewed the code, analyses, visualizations, and interpretations and take responsibility for the submitted work.
